@@ -75,11 +75,6 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
         type === 'image' ||
         type === 'font' ||
         type === 'media' ||
-        u.includes('googletagmanager') ||
-        u.includes('google-analytics') ||
-        u.includes('google.com/rmkt') ||
-        u.includes('google.com/measurement') ||
-        u.includes('google.com/ccm') ||
         u.includes('facebook') ||
         u.includes('chat-widget') ||
         u.includes('cdn-cgi/rum')
@@ -95,9 +90,13 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    // Hide webdriver flag
+    // Hide webdriver flag + stub analytics to prevent "ga is not defined" crashes
     await page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      // The booking engine calls ga() internally — stub it so it doesn't throw
+      window.ga = window.ga || function() {};
+      window.gtag = window.gtag || function() {};
+      window.dataLayer = window.dataLayer || [];
     });
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
