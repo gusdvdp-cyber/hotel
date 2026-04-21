@@ -1,4 +1,5 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 
 const TIMEOUT_MS = 30000;
 const BASE_URL = 'https://www.kingshotel.com.ar/lp.html';
@@ -77,18 +78,10 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
 
   try {
     browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-extensions',
-        '--disable-crash-reporter',
-        '--disable-software-rasterizer',
-      ],
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
       timeout: TIMEOUT_MS,
     });
 

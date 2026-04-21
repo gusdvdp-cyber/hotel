@@ -1,7 +1,7 @@
 FROM node:20-slim
 
+# Only need these libs for @sparticuz/chromium
 RUN apt-get update && apt-get install -y \
-    chromium \
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -23,12 +23,6 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
-
-# Use system Chromium — skip Puppeteer's 170MB bundled download
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-# Prevent dbus errors inside container
-ENV DBUS_SESSION_BUS_ADDRESS=/dev/null
 
 WORKDIR /app
 

@@ -26,36 +26,21 @@ app.get('/health', (req, res) => {
 
 // ─── /debug — test Puppeteer launch only (remove after fix) ──────────────────
 app.get('/debug', async (req, res) => {
-  const puppeteer = require('puppeteer');
-  const fs = require('fs');
-  const { execSync } = require('child_process');
-
-  const info = {
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 'not set',
-    exists: false,
-    chromiumVersion: null,
-    browserLaunch: null,
-    error: null,
-  };
+  const puppeteer = require('puppeteer-core');
+  const chromium = require('@sparticuz/chromium');
+  const info = { browserLaunch: null, error: null };
 
   try {
-    info.exists = fs.existsSync(info.executablePath);
-    info.chromiumVersion = execSync(`${info.executablePath} --version 2>&1`).toString().trim();
-  } catch (e) {
-    info.chromiumVersionError = e.message;
-  }
-
-  try {
+    info.executablePath = await chromium.executablePath();
     const browser = await puppeteer.launch({
-      headless: 'new',
-      executablePath: info.executablePath || undefined,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-             '--disable-gpu', '--no-zygote', '--disable-crash-reporter'],
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: info.executablePath,
+      headless: chromium.headless,
     });
-    const ver = await browser.version();
+    info.browserVersion = await browser.version();
     await browser.close();
     info.browserLaunch = 'OK';
-    info.browserVersion = ver;
   } catch (e) {
     info.browserLaunch = 'FAILED';
     info.error = e.message;
