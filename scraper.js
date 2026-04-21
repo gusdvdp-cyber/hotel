@@ -14,7 +14,7 @@ function calcNights(checkin, checkout) {
   return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
 }
 
-// YYYY-MM-DD → DD/MM/YYYY (formato datepicker argentino)
+// YYYY-MM-DD → DD/MM/YYYY (Argentine datepicker format)
 function toARDate(iso) {
   const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
@@ -38,13 +38,38 @@ function parsePrice(raw) {
   return parseFloat(cleaned);
 }
 
+// Wait for the booking engine to finish loading (loader gone + no intermediate states)
+async function waitForSearchComplete(page, timeoutMs) {
+  await page.waitForFunction(
+    () => {
+      const loader = document.querySelector('.neo_loader');
+      const loaderGone = !loader || window.getComputedStyle(loader).display === 'none';
+      if (!loaderGone) return false;
+      // Check that the module container is visible and not in a "Loading" shimmer state
+      const mega = document.querySelector('.neo_megacontainer');
+      if (!mega || window.getComputedStyle(mega).display === 'none') return false;
+      // Loading shimmer → still running
+      const shimmer = document.querySelector('.Loading .linear-activity');
+      if (shimmer && window.getComputedStyle(shimmer).display !== 'none') return false;
+      // Either rooms or no-inventory must be present
+      const rooms = document.querySelectorAll('.ListItem_Sku');
+      if (rooms.length > 0) return true;
+      const noInv = document.querySelector('#no-inventory-container');
+      if (noInv) return true;
+      return false;
+    },
+    { timeout: timeoutMs }
+  );
+}
+
 async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'ARS' }) {
   const searchId = randomSearchId();
   const nights = calcNights(checkin, checkout);
+  const checkinAR = toARDate(checkin);
+  const checkoutAR = toARDate(checkout);
 
-  // Load WITHOUT search=OK so the form doesn't auto-submit before we set the dates
   const url =
-    `${BASE_URL}?pos=KingsHotel&SearchID=${searchId}` +
+    `${BASE_URL}?search=OK&pos=KingsHotel&SearchID=${searchId}` +
     `&cur=${currency}&lng=es&Pid=8616` +
     `&checkin=${checkin}&checkout=${checkout}`;
 
@@ -66,7 +91,15 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
 
     const page = await browser.newPage();
 
-    // Block non-essential resources
+    // Stub analytics before any scripts run — prevents "ga is not defined" crashes
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.ga = function() {};
+      window.gtag = function() {};
+      window.dataLayer = window.dataLayer || [];
+    });
+
+    // Block analytics & ads network calls (speeds up page load significantly)
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
@@ -75,7 +108,14 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
         type === 'image' ||
         type === 'font' ||
         type === 'media' ||
-        u.includes('facebook') ||
+        u.includes('googletagmanager.com') ||
+        u.includes('google-analytics.com') ||
+        u.includes('analytics.google.com') ||
+        u.includes('google.com/rmkt') ||
+        u.includes('google.com/measurement') ||
+        u.includes('google.com/ccm') ||
+        u.includes('googleadservices.com') ||
+        u.includes('facebook.net') ||
         u.includes('chat-widget') ||
         u.includes('cdn-cgi/rum')
       ) {
@@ -90,128 +130,56 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    // Hide webdriver flag + stub analytics to prevent "ga is not defined" crashes
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      // The booking engine calls ga() internally — stub it so it doesn't throw
-      window.ga = window.ga || function() {};
-      window.gtag = window.gtag || function() {};
-      window.dataLayer = window.dataLayer || [];
-    });
+    // ── Pass 1: load with search=OK (engine auto-submits with today's date) ──
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
+    // Wait for first search to fully complete (~8s budget)
+    await waitForSearchComplete(page, 15000).catch(() => null);
 
-    // Wait for the neo_loader to disappear (page structure ready)
-    await page.waitForFunction(
-      () => {
-        const l = document.querySelector('.neo_loader');
-        return !l || window.getComputedStyle(l).display === 'none';
-      },
-      { timeout: 20000 }
-    ).catch(() => null);
-
-    // Wait for the search form and the datepicker to be initialized
-    await page.waitForSelector('#pxmk_searchform, form[id*="search"]', { timeout: 10000 })
-      .catch(() => null);
-
-    // Extra wait for jQuery + datepicker to finish initializing
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Set the correct dates via jQuery (overrides datepicker defaults)
-    const checkinAR = toARDate(checkin);
-    const checkoutAR = toARDate(checkout);
-
-    const formSet = await page.evaluate(
-      ({ checkinAR, checkoutAR, checkin, checkout, adults }) => {
-        const log = [];
-        if (!window.jQuery) return { ok: false, reason: 'no jQuery' };
+    // ── Pass 2: set correct dates in the still-live form and resubmit ────────
+    const setResult = await page.evaluate(
+      ({ checkinAR, checkoutAR, adults }) => {
+        if (!window.jQuery) return 'no jQuery';
         const $ = window.jQuery;
 
-        // The datepicker uses text inputs — try every known selector
-        const setInput = (selector, value) => {
+        // The datepicker is now initialized — safe to overwrite its inputs
+        const setDP = (selector, value) => {
           const el = $(selector);
-          if (el.length) {
-            el.val(value).trigger('change').trigger('input');
-            log.push(`set ${selector} = ${value}`);
-            return true;
-          }
-          return false;
+          if (!el.length) return false;
+          try { el.datepicker('setDate', value); } catch (e) {}
+          el.val(value);
+          return true;
         };
 
-        // Start date (checkin)
-        setInput('#Start', checkinAR) ||
-        setInput('input[name="Start"]', checkinAR) ||
-        setInput('.fechas_ancho_entrada input', checkinAR) ||
-        setInput('input.fechaintxt:first', checkinAR);
+        setDP('#Start, [name="Start"], .fechas_ancho_entrada input', checkinAR);
+        setDP('#End,   [name="End"],   .fechas_ancho_salida input',  checkoutAR);
 
-        // End date (checkout)
-        setInput('#End', checkoutAR) ||
-        setInput('input[name="End"]', checkoutAR) ||
-        setInput('.fechas_ancho_salida input', checkoutAR) ||
-        setInput('input.fechaintxt:last', checkoutAR);
+        // Adults
+        const n = parseInt(adults, 10);
+        $('.numberAdults').text(n);
+        $('[name="GroupsForm"], [name="adults"], #adults').val(n);
 
-        // Adults — update the counter display and hidden input
-        const adultsNum = parseInt(adults, 10);
-        $('.numberAdults').text(adultsNum);
-        $('input[name="adults"], input[name="Adults"], #adults').val(adultsNum);
+        // Click the search button
+        const btn = $(
+          '#btn_buscar, .boton_buscar, button[type="submit"], ' +
+          'input[type="submit"], button:contains("Buscar"), ' +
+          'a.boton_buscar, .neo_btn_search'
+        );
+        if (btn.length) { btn.first().trigger('click'); return 'clicked:' + btn.first().attr('class'); }
 
-        // Also try to set via the PartyType inputs
-        $('input[name="GroupsForm"]').val(adultsNum);
-
-        log.push(`adults set to ${adultsNum}`);
-
-        return { ok: true, log };
-      },
-      { checkinAR, checkoutAR, checkin, checkout, adults }
-    );
-
-    console.log('[scraper] form set:', JSON.stringify(formSet));
-
-    // Submit the search form
-    await page.evaluate(() => {
-      const $ = window.jQuery;
-      if ($) {
-        // Try clicking the search button first
-        const btn = $('button[type="submit"], input[type="submit"], .boton_buscar, #btn_buscar, button:contains("Buscar"), input[value*="uscar"]');
-        if (btn.length) {
-          btn.first().click();
-          return 'clicked button';
-        }
-        // Fallback: submit form directly
+        // Fallback: submit the form directly
         $('#pxmk_searchform').submit();
         return 'form.submit()';
-      }
-      return 'no jQuery';
-    });
-
-    // Wait for the loader to reappear (search started) then disappear (results ready)
-    await new Promise(r => setTimeout(r, 1000));
-
-    await page.waitForFunction(
-      () => {
-        const l = document.querySelector('.neo_loader');
-        return !l || window.getComputedStyle(l).display === 'none';
       },
-      { timeout: 20000 }
-    ).catch(() => null);
+      { checkinAR, checkoutAR, adults }
+    );
 
-    // Wait for rooms or no-inventory
-    await page.waitForFunction(
-      () => {
-        const rooms = document.querySelectorAll('.ListItem_Sku');
-        if (rooms.length > 0) return true;
-        const noInv = document.querySelector('#no-inventory-container, #no-inventory');
-        if (noInv && window.getComputedStyle(noInv).display !== 'none') return true;
-        // Also check AlmostReady is gone
-        const almost = document.querySelector('.AlmostReady');
-        if (!almost) return true;
-        return false;
-      },
-      { timeout: 20000 }
-    ).catch(() => null);
+    console.log('[scraper] pass2 submit:', setResult);
 
-    await new Promise(r => setTimeout(r, 1000));
+    // Wait for second search to complete (~10s budget)
+    await waitForSearchComplete(page, 12000).catch(() => null);
 
+    // ── Extract ───────────────────────────────────────────────────────────────
     const hasRooms = (await page.$$('.ListItem_Sku')).length > 0;
 
     if (!hasRooms) {
@@ -225,8 +193,7 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
           const nameEl =
             item.querySelector('.ListItem_Titulo') ||
             item.querySelector('.neo_cart_title') ||
-            item.querySelector('h2') ||
-            item.querySelector('h3');
+            item.querySelector('h2') || item.querySelector('h3');
           const nombre = nameEl ? nameEl.textContent.trim() : 'Habitación';
 
           const priceEl =
@@ -251,9 +218,8 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
             item.querySelector('a[href*="checkout"]') ||
             item.querySelector('a[href*="reserva"]') ||
             item.querySelector('.button_list_c a');
-          const link_reserva = linkEl
-            ? (linkEl.href.startsWith('http') ? linkEl.href : reserveBase)
-            : reserveBase;
+          const link_reserva = (linkEl && linkEl.href && linkEl.href.startsWith('http'))
+            ? linkEl.href : reserveBase;
 
           results.push({ nombre, capacidad, precioRaw, moneda, link_reserva });
         });
