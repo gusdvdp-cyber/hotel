@@ -38,24 +38,24 @@ function parsePrice(raw) {
   return parseFloat(cleaned);
 }
 
-// Wait for the booking engine to finish loading (loader gone + no intermediate states)
+// Wait for the booking engine to finish loading
 async function waitForSearchComplete(page, timeoutMs) {
   await page.waitForFunction(
     () => {
+      // 1. Main loader must be gone
       const loader = document.querySelector('.neo_loader');
-      const loaderGone = !loader || window.getComputedStyle(loader).display === 'none';
-      if (!loaderGone) return false;
-      // Check that the module container is visible and not in a "Loading" shimmer state
-      const mega = document.querySelector('.neo_megacontainer');
-      if (!mega || window.getComputedStyle(mega).display === 'none') return false;
-      // Loading shimmer → still running
-      const shimmer = document.querySelector('.Loading .linear-activity');
-      if (shimmer && window.getComputedStyle(shimmer).display !== 'none') return false;
-      // Either rooms or no-inventory must be present
-      const rooms = document.querySelectorAll('.ListItem_Sku');
-      if (rooms.length > 0) return true;
-      const noInv = document.querySelector('#no-inventory-container');
-      if (noInv) return true;
+      if (loader && window.getComputedStyle(loader).display !== 'none') return false;
+
+      // 2. Rooms found → done
+      if (document.querySelectorAll('.ListItem_Sku').length > 0) return true;
+
+      // 3. No-inventory container visible → done (check the parent div visibility)
+      const noInvContainer = document.querySelector('#no-inventory-container');
+      if (noInvContainer) {
+        const disp = window.getComputedStyle(noInvContainer).display;
+        if (disp !== 'none') return true;
+      }
+
       return false;
     },
     { timeout: timeoutMs }
@@ -131,10 +131,14 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
     );
 
     // ── Pass 1: load with search=OK (engine auto-submits with today's date) ──
+    console.log('[scraper] navigating...');
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    console.log('[scraper] domcontentloaded');
 
     // Wait for first search to fully complete
-    await waitForSearchComplete(page, 60000).catch(() => null);
+    console.log('[scraper] waiting for pass1 search complete...');
+    await waitForSearchComplete(page, 60000).catch((e) => console.log('[scraper] pass1 timeout:', e.message));
+    console.log('[scraper] pass1 done');
 
     // ── Pass 2: set correct dates in the still-live form and resubmit ────────
     const setResult = await page.evaluate(
@@ -177,7 +181,9 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
     console.log('[scraper] pass2 submit:', setResult);
 
     // Wait for second search to complete
-    await waitForSearchComplete(page, 60000).catch(() => null);
+    console.log('[scraper] waiting for pass2 search complete...');
+    await waitForSearchComplete(page, 60000).catch((e) => console.log('[scraper] pass2 timeout:', e.message));
+    console.log('[scraper] pass2 done');
 
     // ── Extract ───────────────────────────────────────────────────────────────
     const hasRooms = (await page.$$('.ListItem_Sku')).length > 0;
