@@ -41,7 +41,7 @@ app.get('/debug-page', async (req, res) => {
     const page = await browser.newPage();
     const sid = Math.floor(10000000 + Math.random() * 90000000);
     const url = `https://www.kingshotel.com.ar/lp.html?search=OK&pos=KingsHotel&SearchID=${sid}&cur=ARS&lng=es&Pid=8616&checkin=${checkin}&checkout=${checkout}`;
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Wait for loader to disappear
     await page.waitForFunction(

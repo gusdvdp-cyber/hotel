@@ -113,9 +113,8 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Navigate — networkidle0 catches the booking engine's secondary AJAX calls
     await page.goto(url, {
-      waitUntil: 'networkidle0',
+      waitUntil: 'domcontentloaded',
       timeout: TIMEOUT_MS,
     });
 
