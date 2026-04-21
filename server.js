@@ -41,7 +41,7 @@ app.get('/debug-page', async (req, res) => {
     const page = await browser.newPage();
     const sid = Math.floor(10000000 + Math.random() * 90000000);
     const url = `https://www.kingshotel.com.ar/lp.html?search=OK&pos=KingsHotel&SearchID=${sid}&cur=ARS&lng=es&Pid=8616&checkin=${checkin}&checkout=${checkout}`;
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
     // Wait for loader to disappear
     await page.waitForFunction(
@@ -54,7 +54,27 @@ app.get('/debug-page', async (req, res) => {
       { timeout: 25000 }
     ).catch(() => null);
 
-    await new Promise(r => setTimeout(r, 2000));
+    // Wait for secondary loading state
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector('.Loading, .AlmostReady');
+        if (!el) return true;
+        return window.getComputedStyle(el).display === 'none';
+      },
+      { timeout: 25000 }
+    ).catch(() => null);
+
+    // Wait for rooms or no-inventory
+    await page.waitForFunction(
+      () => {
+        const rooms = document.querySelectorAll('.ListItem_Sku, .neo_cart_sku_main');
+        if (rooms.length > 0) return true;
+        const noInv = document.querySelector('#no-inventory-container, #no-inventory');
+        if (noInv && window.getComputedStyle(noInv).display !== 'none') return true;
+        return false;
+      },
+      { timeout: 25000 }
+    ).catch(() => null);
 
     const data = await page.evaluate(() => {
       // Find the module container and dump its full HTML

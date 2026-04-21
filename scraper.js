@@ -113,14 +113,13 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Navigate — domcontentloaded is enough since we wait for JS separately
+    // Navigate — networkidle0 catches the booking engine's secondary AJAX calls
     await page.goto(url, {
-      waitUntil: 'domcontentloaded',
+      waitUntil: 'networkidle0',
       timeout: TIMEOUT_MS,
     });
 
-    // Step 1: wait for the loading spinner (.neo_loader) to disappear.
-    // This signals that the booking engine JS finished its AJAX call and rendered results.
+    // Step 1: wait for the full-screen loader (.neo_loader) to hide
     await page.waitForFunction(
       () => {
         const loader = document.querySelector('.neo_loader');
@@ -129,22 +128,32 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
         return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
       },
       { timeout: TIMEOUT_MS }
-    );
+    ).catch(() => null);
 
-    // Step 2: wait for the content container to become visible
+    // Step 2: wait for the secondary .Loading state to disappear
+    // (booking engine fires a second XHR after the page renders)
     await page.waitForFunction(
       () => {
-        const c = document.querySelector('.neo_megacontainer');
-        if (!c) return false;
-        return window.getComputedStyle(c).display !== 'none';
+        const el = document.querySelector('.Loading, .AlmostReady');
+        if (!el) return true;
+        return window.getComputedStyle(el).display === 'none';
       },
       { timeout: TIMEOUT_MS }
-    ).catch(() => null); // non-fatal — proceed anyway
+    ).catch(() => null);
 
-    const ROOM_SELECTOR = '.ListItem_Sku';
+    // Step 3: wait for rooms OR a genuine no-inventory indicator to appear
+    await page.waitForFunction(
+      () => {
+        const rooms = document.querySelectorAll('.ListItem_Sku, .neo_cart_sku_main, [class*="ListItem_Sku"]');
+        if (rooms.length > 0) return true;
+        const noInv = document.querySelector('#no-inventory-container, #no-inventory');
+        if (noInv && window.getComputedStyle(noInv).display !== 'none') return true;
+        return false;
+      },
+      { timeout: TIMEOUT_MS }
+    ).catch(() => null);
 
-    // Step 3: brief extra wait for any late-rendering room cards
-    await new Promise(r => setTimeout(r, 1500));
+    const ROOM_SELECTOR = '.ListItem_Sku, .neo_cart_sku_main';
 
     let hasRooms = false;
     try {
