@@ -4,68 +4,47 @@ const chromium = require('@sparticuz/chromium');
 const TIMEOUT_MS = 30000;
 const BASE_URL = 'https://www.kingshotel.com.ar/lp.html';
 
-/**
- * Generates a random 8-digit SearchID
- */
 function randomSearchId() {
   return Math.floor(10000000 + Math.random() * 90000000).toString();
 }
 
-/**
- * Calculates nights between two YYYY-MM-DD dates
- */
 function calcNights(checkin, checkout) {
   const d1 = new Date(checkin);
   const d2 = new Date(checkout);
   return Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
 }
 
-/**
- * Parses a price string like "$ 45.000" or "ARS 45,000" into a number
- */
+// YYYY-MM-DD → DD/MM/YYYY (formato datepicker argentino)
+function toARDate(iso) {
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y}`;
+}
+
 function parsePrice(raw) {
   if (!raw) return null;
-  // Remove currency symbols, letters, spaces — keep digits, dot, comma
   const cleaned = raw.replace(/[^0-9.,]/g, '').trim();
   if (!cleaned) return null;
-  // Argentine format: 45.000 = 45000, or 45,000 = 45000
-  // Could also be 45.000,50 (with cents)
   if (cleaned.includes(',') && cleaned.includes('.')) {
-    // Format: 45.000,50 — dot is thousands separator, comma is decimal
     return parseFloat(cleaned.replace(/\./g, '').replace(',', '.'));
   } else if (cleaned.includes('.')) {
-    // Could be 45.000 (thousands) or 45.50 (decimal)
     const parts = cleaned.split('.');
-    if (parts[parts.length - 1].length === 3) {
-      // Last segment is 3 digits → thousands separator
-      return parseFloat(cleaned.replace(/\./g, ''));
-    }
+    if (parts[parts.length - 1].length === 3) return parseFloat(cleaned.replace(/\./g, ''));
     return parseFloat(cleaned);
   } else if (cleaned.includes(',')) {
-    // 45,000 → thousands separator or 45,50 → decimal
     const parts = cleaned.split(',');
-    if (parts[parts.length - 1].length === 3) {
-      return parseFloat(cleaned.replace(/,/g, ''));
-    }
+    if (parts[parts.length - 1].length === 3) return parseFloat(cleaned.replace(/,/g, ''));
     return parseFloat(cleaned.replace(',', '.'));
   }
   return parseFloat(cleaned);
 }
 
-/**
- * Main scraper function
- * @param {string} checkin  - YYYY-MM-DD
- * @param {string} checkout - YYYY-MM-DD
- * @param {number} adults   - number of adults
- * @param {string} currency - currency code (default ARS)
- * @returns {object} availability result
- */
 async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'ARS' }) {
   const searchId = randomSearchId();
   const nights = calcNights(checkin, checkout);
 
+  // Load WITHOUT search=OK so the form doesn't auto-submit before we set the dates
   const url =
-    `${BASE_URL}?search=OK&pos=KingsHotel&SearchID=${searchId}` +
+    `${BASE_URL}?pos=KingsHotel&SearchID=${searchId}` +
     `&cur=${currency}&lng=es&Pid=8616` +
     `&checkin=${checkin}&checkout=${checkout}`;
 
@@ -87,20 +66,23 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
 
     const page = await browser.newPage();
 
-    // Block unnecessary resources to speed up scraping
+    // Block non-essential resources
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const type = req.resourceType();
-      const url = req.url();
-      // Block images, fonts, analytics — but allow scripts and XHR needed for booking engine
+      const u = req.url();
       if (
         type === 'image' ||
         type === 'font' ||
         type === 'media' ||
-        url.includes('googletagmanager') ||
-        url.includes('google-analytics') ||
-        url.includes('facebook') ||
-        url.includes('chat-widget')
+        u.includes('googletagmanager') ||
+        u.includes('google-analytics') ||
+        u.includes('google.com/rmkt') ||
+        u.includes('google.com/measurement') ||
+        u.includes('google.com/ccm') ||
+        u.includes('facebook') ||
+        u.includes('chat-widget') ||
+        u.includes('cdn-cgi/rum')
       ) {
         req.abort();
       } else {
@@ -110,85 +92,144 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
 
     await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     );
 
-    await page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: TIMEOUT_MS,
+    // Hide webdriver flag
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
 
-    // Step 1: wait for the full-screen loader (.neo_loader) to hide
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
+
+    // Wait for the neo_loader to disappear (page structure ready)
     await page.waitForFunction(
       () => {
-        const loader = document.querySelector('.neo_loader');
-        if (!loader) return true;
-        const s = window.getComputedStyle(loader);
-        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+        const l = document.querySelector('.neo_loader');
+        return !l || window.getComputedStyle(l).display === 'none';
       },
-      { timeout: TIMEOUT_MS }
+      { timeout: 20000 }
     ).catch(() => null);
 
-    // Step 2: wait for the secondary .Loading state to disappear
-    // (booking engine fires a second XHR after the page renders)
+    // Wait for the search form and the datepicker to be initialized
+    await page.waitForSelector('#pxmk_searchform, form[id*="search"]', { timeout: 10000 })
+      .catch(() => null);
+
+    // Extra wait for jQuery + datepicker to finish initializing
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Set the correct dates via jQuery (overrides datepicker defaults)
+    const checkinAR = toARDate(checkin);
+    const checkoutAR = toARDate(checkout);
+
+    const formSet = await page.evaluate(
+      ({ checkinAR, checkoutAR, checkin, checkout, adults }) => {
+        const log = [];
+        if (!window.jQuery) return { ok: false, reason: 'no jQuery' };
+        const $ = window.jQuery;
+
+        // The datepicker uses text inputs — try every known selector
+        const setInput = (selector, value) => {
+          const el = $(selector);
+          if (el.length) {
+            el.val(value).trigger('change').trigger('input');
+            log.push(`set ${selector} = ${value}`);
+            return true;
+          }
+          return false;
+        };
+
+        // Start date (checkin)
+        setInput('#Start', checkinAR) ||
+        setInput('input[name="Start"]', checkinAR) ||
+        setInput('.fechas_ancho_entrada input', checkinAR) ||
+        setInput('input.fechaintxt:first', checkinAR);
+
+        // End date (checkout)
+        setInput('#End', checkoutAR) ||
+        setInput('input[name="End"]', checkoutAR) ||
+        setInput('.fechas_ancho_salida input', checkoutAR) ||
+        setInput('input.fechaintxt:last', checkoutAR);
+
+        // Adults — update the counter display and hidden input
+        const adultsNum = parseInt(adults, 10);
+        $('.numberAdults').text(adultsNum);
+        $('input[name="adults"], input[name="Adults"], #adults').val(adultsNum);
+
+        // Also try to set via the PartyType inputs
+        $('input[name="GroupsForm"]').val(adultsNum);
+
+        log.push(`adults set to ${adultsNum}`);
+
+        return { ok: true, log };
+      },
+      { checkinAR, checkoutAR, checkin, checkout, adults }
+    );
+
+    console.log('[scraper] form set:', JSON.stringify(formSet));
+
+    // Submit the search form
+    await page.evaluate(() => {
+      const $ = window.jQuery;
+      if ($) {
+        // Try clicking the search button first
+        const btn = $('button[type="submit"], input[type="submit"], .boton_buscar, #btn_buscar, button:contains("Buscar"), input[value*="uscar"]');
+        if (btn.length) {
+          btn.first().click();
+          return 'clicked button';
+        }
+        // Fallback: submit form directly
+        $('#pxmk_searchform').submit();
+        return 'form.submit()';
+      }
+      return 'no jQuery';
+    });
+
+    // Wait for the loader to reappear (search started) then disappear (results ready)
+    await new Promise(r => setTimeout(r, 1000));
+
     await page.waitForFunction(
       () => {
-        const el = document.querySelector('.Loading, .AlmostReady');
-        if (!el) return true;
-        return window.getComputedStyle(el).display === 'none';
+        const l = document.querySelector('.neo_loader');
+        return !l || window.getComputedStyle(l).display === 'none';
       },
-      { timeout: TIMEOUT_MS }
+      { timeout: 20000 }
     ).catch(() => null);
 
-    // Step 3: wait for rooms OR a genuine no-inventory indicator to appear
+    // Wait for rooms or no-inventory
     await page.waitForFunction(
       () => {
-        const rooms = document.querySelectorAll('.ListItem_Sku, .neo_cart_sku_main, [class*="ListItem_Sku"]');
+        const rooms = document.querySelectorAll('.ListItem_Sku');
         if (rooms.length > 0) return true;
         const noInv = document.querySelector('#no-inventory-container, #no-inventory');
         if (noInv && window.getComputedStyle(noInv).display !== 'none') return true;
+        // Also check AlmostReady is gone
+        const almost = document.querySelector('.AlmostReady');
+        if (!almost) return true;
         return false;
       },
-      { timeout: TIMEOUT_MS }
+      { timeout: 20000 }
     ).catch(() => null);
 
-    const ROOM_SELECTOR = '.ListItem_Sku, .neo_cart_sku_main';
+    await new Promise(r => setTimeout(r, 1000));
 
-    let hasRooms = false;
-    try {
-      hasRooms = (await page.$$(ROOM_SELECTOR)).length > 0;
-    } catch (_) {
-      hasRooms = false;
-    }
+    const hasRooms = (await page.$$('.ListItem_Sku')).length > 0;
 
     if (!hasRooms) {
-      return {
-        disponible: false,
-        checkin,
-        checkout,
-        noches: nights,
-        adults,
-        habitaciones: [],
-      };
+      return { disponible: false, checkin, checkout, noches: nights, adults, habitaciones: [] };
     }
 
-    // Extract room data
     const habitaciones = await page.evaluate(
       ({ reserveBase, adults }) => {
-        const items = document.querySelectorAll('.ListItem_Sku');
         const results = [];
-
-        items.forEach((item) => {
-          // Room name — try multiple selectors in order of specificity
+        document.querySelectorAll('.ListItem_Sku').forEach((item) => {
           const nameEl =
             item.querySelector('.ListItem_Titulo') ||
             item.querySelector('.neo_cart_title') ||
-            item.querySelector('.sku_main_description h2') ||
             item.querySelector('h2') ||
             item.querySelector('h3');
           const nombre = nameEl ? nameEl.textContent.trim() : 'Habitación';
 
-          // Price — try promotional rate first, then regular
           const priceEl =
             item.querySelector('.ListItem_promotionalrate') ||
             item.querySelector('.pricepreview_now') ||
@@ -196,47 +237,32 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
             item.querySelector('.NightsTotalRate');
           const precioRaw = priceEl ? priceEl.textContent.trim() : '';
 
-          // Currency detection from price text or data attribute
           let moneda = 'ARS';
           if (precioRaw.toUpperCase().includes('USD')) moneda = 'USD';
 
-          // Capacity — look for bed/adult info
           const capEl =
             item.querySelector('.pref_cama') ||
             item.querySelector('.neo_amenity_item') ||
-            item.querySelector('[class*="capacidad"]') ||
-            item.querySelector('[class*="adultos"]');
+            item.querySelector('[class*="capacidad"]');
           let capacidad = capEl ? capEl.textContent.trim() : `${adults} adultos`;
-          if (!capacidad || capacidad.length > 50) {
-            capacidad = `${adults} adultos`;
-          }
+          if (!capacidad || capacidad.length > 50) capacidad = `${adults} adultos`;
 
-          // Reserve link — look for anchor with booking href, or construct it
           const linkEl =
             item.querySelector('a.boton') ||
             item.querySelector('a[href*="checkout"]') ||
             item.querySelector('a[href*="reserva"]') ||
-            item.querySelector('a[href*="booking"]') ||
             item.querySelector('.button_list_c a');
           const link_reserva = linkEl
-            ? linkEl.href || reserveBase
+            ? (linkEl.href.startsWith('http') ? linkEl.href : reserveBase)
             : reserveBase;
 
-          results.push({
-            nombre,
-            capacidad,
-            precioRaw,
-            moneda,
-            link_reserva: link_reserva.startsWith('http') ? link_reserva : reserveBase,
-          });
+          results.push({ nombre, capacidad, precioRaw, moneda, link_reserva });
         });
-
         return results;
       },
       { reserveBase, adults }
     );
 
-    // Parse prices in Node context (not in browser evaluate)
     const habitacionesClean = habitaciones.map((h) => ({
       nombre: h.nombre,
       capacidad: h.capacidad,
@@ -254,9 +280,7 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
       habitaciones: habitacionesClean,
     };
   } finally {
-    if (browser) {
-      await browser.close();
-    }
+    if (browser) await browser.close();
   }
 }
 
