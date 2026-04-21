@@ -24,6 +24,41 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ─── /debug-page — capture HTML of booking page to verify selectors ──────────
+app.get('/debug-page', async (req, res) => {
+  const puppeteer = require('puppeteer-core');
+  const chromium = require('@sparticuz/chromium');
+  const { checkin = '2026-05-10', checkout = '2026-05-12' } = req.query;
+
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+    const page = await browser.newPage();
+    const url = `https://www.kingshotel.com.ar/lp.html?search=OK&pos=KingsHotel&SearchID=12345678&cur=ARS&lng=es&Pid=8616&checkin=${checkin}&checkout=${checkout}`;
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await new Promise(r => setTimeout(r, 3000)); // extra wait for lazy JS
+
+    const data = await page.evaluate(() => ({
+      bodySnippet: document.body.innerHTML.substring(0, 5000),
+      listItemCount: document.querySelectorAll('.ListItem_Sku').length,
+      cartSkuCount: document.querySelectorAll('.neo_cart_sku').length,
+      cartSkuListHTML: document.querySelector('#cart_sku_list')?.innerHTML?.substring(0, 2000) || 'NOT FOUND',
+      noInventory: !!document.querySelector('#no-inventory-container, #no-inventory'),
+      allClasses: [...new Set([...document.querySelectorAll('[class]')].map(el => el.className).filter(Boolean))].slice(0, 50),
+    }));
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 // ─── /debug — test Puppeteer launch only (remove after fix) ──────────────────
 app.get('/debug', async (req, res) => {
   const puppeteer = require('puppeteer-core');
