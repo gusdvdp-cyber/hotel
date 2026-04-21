@@ -69,7 +69,7 @@ app.get('/debug-page', async (req, res) => {
         megaContainerVisible: (() => { const c = document.querySelector('.neo_megacontainer'); return c ? window.getComputedStyle(c).display : 'absent'; })(),
         moduleContainerHTML: moduleContainer?.innerHTML?.substring(0, 3000) || 'NOT FOUND',
         roomCandidates,
-        allClasses: [...new Set([...document.querySelectorAll('[class]')].map(el => el.className.trim()).filter(c => c.length < 80))].sort().slice(0, 80),
+        allClasses: [...new Set([...document.querySelectorAll('[class]')].map(el => (typeof el.className === 'string' ? el.className : '')).filter(c => c.length > 0 && c.length < 80))].sort().slice(0, 80),
       };
     });
     res.json(data);
