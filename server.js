@@ -56,14 +56,22 @@ app.get('/debug-page', async (req, res) => {
 
     await new Promise(r => setTimeout(r, 2000));
 
-    const data = await page.evaluate(() => ({
-      loaderVisible: (() => { const l = document.querySelector('.neo_loader'); return l ? window.getComputedStyle(l).display : 'absent'; })(),
-      megaContainerVisible: (() => { const c = document.querySelector('.neo_megacontainer'); return c ? window.getComputedStyle(c).display : 'absent'; })(),
-      listItemCount: document.querySelectorAll('.ListItem_Sku').length,
-      firstRoomHTML: document.querySelector('.ListItem_Sku')?.innerHTML?.substring(0, 1000) || 'NOT FOUND',
-      noInventoryVisible: (() => { const n = document.querySelector('#no-inventory-container, #no-inventory'); return n ? window.getComputedStyle(n).display : 'absent'; })(),
-      alertText: document.querySelector('.neo_alert_message')?.textContent?.trim() || null,
-    }));
+    const data = await page.evaluate(() => {
+      // Find the module container and dump its full HTML
+      const moduleContainer = document.querySelector('.neo_modules_cart_hotel_v2, .container_cargarmodulo, #cart_sku_list');
+      // Grab all elements with class containing "item", "room", "hab", "sku", "prod"
+      const roomCandidates = [...document.querySelectorAll('[class*="Item"], [class*="item"], [class*="room"], [class*="Room"], [class*="hab"], [class*="sku"], [class*="Sku"], [class*="prod"], [class*="Prod"]')]
+        .map(el => ({ tag: el.tagName, cls: el.className, snippet: el.innerHTML.substring(0, 200) }))
+        .slice(0, 10);
+
+      return {
+        loaderVisible: (() => { const l = document.querySelector('.neo_loader'); return l ? window.getComputedStyle(l).display : 'absent'; })(),
+        megaContainerVisible: (() => { const c = document.querySelector('.neo_megacontainer'); return c ? window.getComputedStyle(c).display : 'absent'; })(),
+        moduleContainerHTML: moduleContainer?.innerHTML?.substring(0, 3000) || 'NOT FOUND',
+        roomCandidates,
+        allClasses: [...new Set([...document.querySelectorAll('[class]')].map(el => el.className.trim()).filter(c => c.length < 80))].sort().slice(0, 80),
+      };
+    });
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
