@@ -24,11 +24,11 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ─── /debug-page — capture HTML of booking page to verify selectors ──────────
+// ─── /debug-page — intercept XHR to find the real API the booking engine uses ─
 app.get('/debug-page', async (req, res) => {
   const puppeteer = require('puppeteer-core');
   const chromium = require('@sparticuz/chromium');
-  const { checkin = '2026-05-10', checkout = '2026-05-12' } = req.query;
+  const { checkin = '2026-06-15', checkout = '2026-06-17' } = req.query;
 
   let browser;
   try {
@@ -39,60 +39,45 @@ app.get('/debug-page', async (req, res) => {
       headless: chromium.headless,
     });
     const page = await browser.newPage();
+
+    // Capture all XHR/fetch responses to find the real data API
+    const xhrCalls = [];
+    page.on('response', async (response) => {
+      const url = response.url();
+      const type = response.request().resourceType();
+      if ((type === 'xhr' || type === 'fetch') && url.includes('kingshotel')) {
+        try {
+          const body = await response.text().catch(() => '');
+          xhrCalls.push({
+            url,
+            status: response.status(),
+            bodySnippet: body.substring(0, 500),
+          });
+        } catch (_) {}
+      }
+    });
+
     const sid = Math.floor(10000000 + Math.random() * 90000000);
     const url = `https://www.kingshotel.com.ar/lp.html?search=OK&pos=KingsHotel&SearchID=${sid}&cur=ARS&lng=es&Pid=8616&checkin=${checkin}&checkout=${checkout}`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Wait for loader to disappear
     await page.waitForFunction(
-      () => {
-        const loader = document.querySelector('.neo_loader');
-        if (!loader) return true;
-        const s = window.getComputedStyle(loader);
-        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
-      },
-      { timeout: 25000 }
+      () => { const l = document.querySelector('.neo_loader'); return !l || window.getComputedStyle(l).display === 'none'; },
+      { timeout: 20000 }
     ).catch(() => null);
 
-    // Wait for secondary loading state
-    await page.waitForFunction(
-      () => {
-        const el = document.querySelector('.Loading, .AlmostReady');
-        if (!el) return true;
-        return window.getComputedStyle(el).display === 'none';
-      },
-      { timeout: 25000 }
-    ).catch(() => null);
+    // Extra wait for AJAX
+    await new Promise(r => setTimeout(r, 8000));
 
-    // Wait for rooms or no-inventory
-    await page.waitForFunction(
-      () => {
-        const rooms = document.querySelectorAll('.ListItem_Sku, .neo_cart_sku_main');
-        if (rooms.length > 0) return true;
-        const noInv = document.querySelector('#no-inventory-container, #no-inventory');
-        if (noInv && window.getComputedStyle(noInv).display !== 'none') return true;
-        return false;
-      },
-      { timeout: 25000 }
-    ).catch(() => null);
+    const domInfo = await page.evaluate(() => ({
+      listItemCount: document.querySelectorAll('.ListItem_Sku').length,
+      AlmostReadyHTML: document.querySelector('.AlmostReady')?.innerHTML?.substring(0, 1000) || null,
+      LoadingHTML: document.querySelector('.Loading')?.innerHTML?.substring(0, 500) || null,
+      bodyEnd: document.body.innerHTML.slice(-2000),
+    }));
 
-    const data = await page.evaluate(() => {
-      // Find the module container and dump its full HTML
-      const moduleContainer = document.querySelector('.neo_modules_cart_hotel_v2, .container_cargarmodulo, #cart_sku_list');
-      // Grab all elements with class containing "item", "room", "hab", "sku", "prod"
-      const roomCandidates = [...document.querySelectorAll('[class*="Item"], [class*="item"], [class*="room"], [class*="Room"], [class*="hab"], [class*="sku"], [class*="Sku"], [class*="prod"], [class*="Prod"]')]
-        .map(el => ({ tag: el.tagName, cls: el.className, snippet: el.innerHTML.substring(0, 200) }))
-        .slice(0, 10);
-
-      return {
-        loaderVisible: (() => { const l = document.querySelector('.neo_loader'); return l ? window.getComputedStyle(l).display : 'absent'; })(),
-        megaContainerVisible: (() => { const c = document.querySelector('.neo_megacontainer'); return c ? window.getComputedStyle(c).display : 'absent'; })(),
-        moduleContainerHTML: moduleContainer?.innerHTML?.substring(0, 3000) || 'NOT FOUND',
-        roomCandidates,
-        allClasses: [...new Set([...document.querySelectorAll('[class]')].map(el => (typeof el.className === 'string' ? el.className : '')).filter(c => c.length > 0 && c.length < 80))].sort().slice(0, 80),
-      };
-    });
-    res.json(data);
+    res.json({ xhrCalls, domInfo });
   } catch (e) {
     res.status(500).json({ error: e.message });
   } finally {
