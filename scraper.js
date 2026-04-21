@@ -1,7 +1,7 @@
 const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
 
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 55000;
 const BASE_URL = 'https://www.kingshotel.com.ar/lp.html';
 
 function randomSearchId() {
@@ -131,10 +131,10 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
     );
 
     // ── Pass 1: load with search=OK (engine auto-submits with today's date) ──
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
 
-    // Wait for first search to fully complete (~8s budget)
-    await waitForSearchComplete(page, 15000).catch(() => null);
+    // Wait for first search to fully complete
+    await waitForSearchComplete(page, 20000).catch(() => null);
 
     // ── Pass 2: set correct dates in the still-live form and resubmit ────────
     const setResult = await page.evaluate(
@@ -176,8 +176,8 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
 
     console.log('[scraper] pass2 submit:', setResult);
 
-    // Wait for second search to complete (~10s budget)
-    await waitForSearchComplete(page, 12000).catch(() => null);
+    // Wait for second search to complete
+    await waitForSearchComplete(page, 20000).catch(() => null);
 
     // ── Extract ───────────────────────────────────────────────────────────────
     const hasRooms = (await page.$$('.ListItem_Sku')).length > 0;

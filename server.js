@@ -148,7 +148,7 @@ app.get('/availability', async (req, res) => {
 
   // ── Run scraper with 30s hard timeout ─────────────────────────────────────
   const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('Timeout: la consulta tardó más de 30 segundos')), 30000)
+    setTimeout(() => reject(new Error('Timeout: la consulta tardó más de 60 segundos')), 60000)
   );
 
   try {
