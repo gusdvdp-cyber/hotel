@@ -1,7 +1,27 @@
 const puppeteer = require('puppeteer');
+const fs = require('fs');
 
 const TIMEOUT_MS = 30000;
 const BASE_URL = 'https://www.kingshotel.com.ar/lp.html';
+
+// Detect Chromium executable — handles different Linux distros and Railway/Render envs
+function findChromium() {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/snap/bin/chromium',
+  ].filter(Boolean);
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch (_) {}
+  }
+  return undefined; // Let Puppeteer find its own bundled binary
+}
 
 /**
  * Generates a random 8-digit SearchID
@@ -76,8 +96,12 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
   let browser;
 
   try {
+    const executablePath = findChromium();
+    console.log('[scraper] Chromium path:', executablePath || 'puppeteer default');
+
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -85,8 +109,8 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
         '--disable-gpu',
         '--no-first-run',
         '--no-zygote',
-        '--single-process',
         '--disable-extensions',
+        '--disable-software-rasterizer',
       ],
       timeout: TIMEOUT_MS,
     });

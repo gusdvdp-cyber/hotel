@@ -1,11 +1,9 @@
-# ── Build stage ───────────────────────────────────────────────────────────────
-FROM node:20-slim AS base
+FROM node:20-slim
 
-# Install Chromium dependencies for Puppeteer
+# Install Chromium and all required system deps
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
-    libappindicator3-1 \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
@@ -18,27 +16,30 @@ RUN apt-get update && apt-get install -y \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
+    libxss1 \
+    libxtst6 \
     xdg-utils \
+    ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Tell Puppeteer to use the system Chromium instead of downloading its own
+# Detect and expose the real Chromium path at build time
+RUN which chromium || which chromium-browser || echo "chromium not found"
+
+# Skip Puppeteer's bundled Chromium download entirely
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
 COPY package*.json ./
-
-# Install production deps only
 RUN npm install --omit=dev
 
 COPY . .
 
-# Run as non-root user (required by Chromium sandboxing)
-RUN groupadd -r appuser && useradd -r -g appuser -G audio,video appuser \
-    && chown -R appuser:appuser /app
-USER appuser
+# Create non-root user
+RUN groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
+    && chown -R pptruser:pptruser /app
+USER pptruser
 
 EXPOSE 3000
 
