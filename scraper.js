@@ -113,31 +113,43 @@ async function scrapeAvailability({ checkin, checkout, adults = 2, currency = 'A
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Navigate and wait for network to settle
+    // Navigate — domcontentloaded is enough since we wait for JS separately
     await page.goto(url, {
-      waitUntil: 'networkidle2',
+      waitUntil: 'domcontentloaded',
       timeout: TIMEOUT_MS,
     });
 
-    // Wait for either room results or no-inventory indicator
-    // The module loads dynamically via JS — we wait for the results container
+    // Step 1: wait for the loading spinner (.neo_loader) to disappear.
+    // This signals that the booking engine JS finished its AJAX call and rendered results.
+    await page.waitForFunction(
+      () => {
+        const loader = document.querySelector('.neo_loader');
+        if (!loader) return true;
+        const s = window.getComputedStyle(loader);
+        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+      },
+      { timeout: TIMEOUT_MS }
+    );
+
+    // Step 2: wait for the content container to become visible
+    await page.waitForFunction(
+      () => {
+        const c = document.querySelector('.neo_megacontainer');
+        if (!c) return false;
+        return window.getComputedStyle(c).display !== 'none';
+      },
+      { timeout: TIMEOUT_MS }
+    ).catch(() => null); // non-fatal — proceed anyway
+
     const ROOM_SELECTOR = '.ListItem_Sku';
-    const NO_INVENTORY_SELECTOR = '#no-inventory-container, #no-inventory, .no-inventory';
-    const RESULTS_CONTAINER = '#cart_sku_list';
+
+    // Step 3: brief extra wait for any late-rendering room cards
+    await new Promise(r => setTimeout(r, 1500));
 
     let hasRooms = false;
     try {
-      await Promise.race([
-        page.waitForSelector(ROOM_SELECTOR, { timeout: TIMEOUT_MS }),
-        page.waitForSelector(NO_INVENTORY_SELECTOR, { timeout: TIMEOUT_MS }),
-        // Also wait for the container itself even if empty
-        page.waitForSelector(RESULTS_CONTAINER, { timeout: TIMEOUT_MS }),
-      ]);
-
-      // Check if actual room cards appeared
       hasRooms = (await page.$$(ROOM_SELECTOR)).length > 0;
     } catch (_) {
-      // Timeout waiting for selector — page may not have rooms
       hasRooms = false;
     }
 

@@ -40,16 +40,28 @@ app.get('/debug-page', async (req, res) => {
     });
     const page = await browser.newPage();
     const url = `https://www.kingshotel.com.ar/lp.html?search=OK&pos=KingsHotel&SearchID=12345678&cur=ARS&lng=es&Pid=8616&checkin=${checkin}&checkout=${checkout}`;
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await new Promise(r => setTimeout(r, 3000)); // extra wait for lazy JS
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Wait for loader to disappear
+    await page.waitForFunction(
+      () => {
+        const loader = document.querySelector('.neo_loader');
+        if (!loader) return true;
+        const s = window.getComputedStyle(loader);
+        return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+      },
+      { timeout: 25000 }
+    ).catch(() => null);
+
+    await new Promise(r => setTimeout(r, 2000));
 
     const data = await page.evaluate(() => ({
-      bodySnippet: document.body.innerHTML.substring(0, 5000),
+      loaderVisible: (() => { const l = document.querySelector('.neo_loader'); return l ? window.getComputedStyle(l).display : 'absent'; })(),
+      megaContainerVisible: (() => { const c = document.querySelector('.neo_megacontainer'); return c ? window.getComputedStyle(c).display : 'absent'; })(),
       listItemCount: document.querySelectorAll('.ListItem_Sku').length,
-      cartSkuCount: document.querySelectorAll('.neo_cart_sku').length,
-      cartSkuListHTML: document.querySelector('#cart_sku_list')?.innerHTML?.substring(0, 2000) || 'NOT FOUND',
-      noInventory: !!document.querySelector('#no-inventory-container, #no-inventory'),
-      allClasses: [...new Set([...document.querySelectorAll('[class]')].map(el => el.className).filter(Boolean))].slice(0, 50),
+      firstRoomHTML: document.querySelector('.ListItem_Sku')?.innerHTML?.substring(0, 1000) || 'NOT FOUND',
+      noInventoryVisible: (() => { const n = document.querySelector('#no-inventory-container, #no-inventory'); return n ? window.getComputedStyle(n).display : 'absent'; })(),
+      alertText: document.querySelector('.neo_alert_message')?.textContent?.trim() || null,
     }));
     res.json(data);
   } catch (e) {
